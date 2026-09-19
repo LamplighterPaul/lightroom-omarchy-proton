@@ -1,0 +1,50 @@
+diff --git a/dlls/ntdll/threadpool.c b/dlls/ntdll/threadpool.c
+--- a/dlls/ntdll/threadpool.c
++++ b/dlls/ntdll/threadpool.c
+@@ -105,6 +105,7 @@ struct threadpool
+     LONG                    refcount;
+     LONG                    objcount;
+     BOOL                    shutdown;
++    BOOL                    close_requested;
+     CRITICAL_SECTION        cs;
+     /* Pools of work items, locked via .cs, order matches TP_CALLBACK_PRIORITY - high, normal, low. */
+     struct list             pools[3];
+@@ -1688,6 +1689,7 @@ static NTSTATUS tp_threadpool_alloc( struct threadpool **out )
+     pool->refcount              = 1;
+     pool->objcount              = 0;
+     pool->shutdown              = FALSE;
++    pool->close_requested        = FALSE;
+ 
+     RtlInitializeCriticalSectionEx( &pool->cs, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO );
+     pool->cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": threadpool.cs");
+@@ -1720,8 +1722,16 @@ static void tp_threadpool_shutdown( struct threadpool *pool )
+ {
+     assert( pool != default_threadpool );
+ 
+-    pool->shutdown = TRUE;
+-    RtlWakeAllConditionVariable( &pool->update_event );
++    /* CloseThreadpool releases the pool asynchronously while bound objects
++     * remain alive. Timers and waits may still need to submit callbacks. */
++    RtlEnterCriticalSection( &pool->cs );
++    pool->close_requested = TRUE;
++    if (!pool->objcount)
++    {
++        pool->shutdown = TRUE;
++        RtlWakeAllConditionVariable( &pool->update_event );
++    }
++    RtlLeaveCriticalSection( &pool->cs );
+ }
+ 
+ /***********************************************************************
+@@ -1833,6 +1843,11 @@ static void tp_threadpool_unlock( struct threadpool *pool )
+ {
+     RtlEnterCriticalSection( &pool->cs );
+     pool->objcount--;
++    if (!pool->objcount && pool->close_requested)
++    {
++        pool->shutdown = TRUE;
++        RtlWakeAllConditionVariable( &pool->update_event );
++    }
+     RtlLeaveCriticalSection( &pool->cs );
+     tp_threadpool_release( pool );
+ }

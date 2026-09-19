@@ -1,0 +1,106 @@
+--- a/dlls/win32u/menu.c
++++ b/dlls/win32u/menu.c
+@@ -43,6 +43,25 @@
+     if ((slash = wcsrchr( name, '\\' ))) name = slash + 1;
+     if ((slash = wcsrchr( name, '/' ))) name = slash + 1;
+     return !wcsicmp( name, u"lightroom.exe" );
++}
++
++/* Opt-in, phase-only diagnostics: no menu text or document data. */
++static LONGLONG lightroom_menu_stamp(void)
++{
++    LARGE_INTEGER counter;
++    const char *enabled = getenv( "LIGHTROOM_OMARCHY_MENU_TIMING" );
++    if (!enabled || strcmp( enabled, "1" )) return 0;
++    NtQueryPerformanceCounter( &counter, NULL );
++    return counter.QuadPart;
++}
++
++static void lightroom_menu_elapsed( const char *phase, LONGLONG start )
++{
++    LARGE_INTEGER counter, frequency;
++    if (!start) return;
++    NtQueryPerformanceCounter( &counter, &frequency );
++    WARN( "LR_MENU phase=%s duration_ms=%.3f\n", phase,
++          (counter.QuadPart - start) * 1000.0 / frequency.QuadPart );
+ }
+ 
+ /* menu item structure */
+@@ -3113,7 +3132,11 @@
+ 
+     max_height = info.rcWork.bottom - info.rcWork.top;
+     if (menu->cyMax) max_height = min( max_height, menu->cyMax );
+-    calc_popup_menu_size( menu, max_height );
++    {
++        LONGLONG stamp = lightroom_menu_stamp();
++        calc_popup_menu_size( menu, max_height );
++        lightroom_menu_elapsed( "popup-layout", stamp );
++    }
+ 
+     /* adjust popup menu pos so that it fits within the desktop */
+     if (flags & TPM_LAYOUTRTL) flags ^= TPM_RIGHTALIGN;
+@@ -3145,9 +3168,15 @@
+     }
+ 
+     /* Display the window */
+-    NtUserSetWindowPos( menu->hWnd, HWND_TOPMOST, x, y, menu->Width, menu->Height,
+-                        SWP_SHOWWINDOW | SWP_NOACTIVATE );
+-    NtUserRedrawWindow( menu->hWnd, NULL, 0, RDW_UPDATENOW | RDW_ALLCHILDREN );
++    {
++        LONGLONG stamp = lightroom_menu_stamp();
++        NtUserSetWindowPos( menu->hWnd, HWND_TOPMOST, x, y, menu->Width, menu->Height,
++                            SWP_SHOWWINDOW | SWP_NOACTIVATE );
++        lightroom_menu_elapsed( "show-popup-window", stamp );
++        stamp = lightroom_menu_stamp();
++        NtUserRedrawWindow( menu->hWnd, NULL, 0, RDW_UPDATENOW | RDW_ALLCHILDREN );
++        lightroom_menu_elapsed( "popup-paint", stamp );
++    }
+     return TRUE;
+ }
+ 
+@@ -3403,8 +3432,12 @@
+ 
+     /* Send WM_INITMENUPOPUP message only if TPM_NONOTIFY flag is not specified */
+     if (!(flags & TPM_NONOTIFY))
++    {
++       LONGLONG stamp = lightroom_menu_stamp();
+        send_message( owner, WM_INITMENUPOPUP, (WPARAM)item->hSubMenu,
+                      MAKELPARAM( menu->FocusedItem, IS_SYSTEM_MENU( menu )));
++       lightroom_menu_elapsed( "init-popup-callback", stamp );
++    }
+ 
+     item = &menu->items[menu->FocusedItem];
+     rect = item->rect;
+@@ -3471,7 +3504,11 @@
+ 
+     /* use default alignment for submenus */
+     flags &= ~(TPM_CENTERALIGN | TPM_RIGHTALIGN | TPM_VCENTERALIGN | TPM_BOTTOMALIGN);
+-    init_popup( owner, item->hSubMenu, flags );
++    {
++        LONGLONG stamp = lightroom_menu_stamp();
++        init_popup( owner, item->hSubMenu, flags );
++        lightroom_menu_elapsed( "create-popup-window", stamp );
++    }
+     show_popup( owner, item->hSubMenu, menu->FocusedItem, flags,
+                 rect.left, rect.top, rect.right, rect.bottom );
+     if (select_first) move_selection( owner, item->hSubMenu, ITEM_NEXT );
+@@ -4418,13 +4455,19 @@
+ 
+     /* Send WM_ENTERMENULOOP and WM_INITMENU message only if TPM_NONOTIFY flag is not specified */
+     if (!(flags & TPM_NONOTIFY))
++    {
++       LONGLONG stamp = lightroom_menu_stamp();
+        send_message( hwnd, WM_ENTERMENULOOP, is_popup, 0 );
++       lightroom_menu_elapsed( "enter-menu-callback", stamp );
++    }
+ 
+     send_message( hwnd, WM_SETCURSOR, (WPARAM)hwnd, HTCAPTION );
+ 
+     if (!(flags & TPM_NONOTIFY))
+     {
++       LONGLONG stamp = lightroom_menu_stamp();
+        send_message( hwnd, WM_INITMENU, (WPARAM)handle, 0 );
++       lightroom_menu_elapsed( "init-menu-callback", stamp );
+        /* If an app changed/recreated menu bar entries in WM_INITMENU
+         * menu sizes will be recalculated once the menu created/shown. */
+     }
