@@ -1,0 +1,86 @@
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -3642,16 +3642,28 @@
+ /***********************************************************************
+  *           NtUserPeekMessage  (win32u.@)
+  */
++static __thread unsigned lr_pending_syschar;
++
+ BOOL WINAPI NtUserPeekMessage( MSG *msg_out, HWND hwnd, UINT first, UINT last, UINT flags )
+ {
+     struct peek_message_filter filter = {.hwnd = hwnd, .first = first, .last = last, .flags = flags};
+     MSG msg;
+     int ret;
++    BOOL lr_trace = lr_pending_syschar != 0;
++
++    if (lr_trace)
++    {
++        lr_pending_syschar--;
++        WARN_(key)( "LR_INPUT peek-enter first=%x last=%x flags=%x\n", first, last, flags );
++    }
+ 
+     user_check_not_lock();
+     check_for_driver_events();
+ 
+-    if ((ret = peek_message( &msg, &filter )) <= 0)
++    if (lr_trace) WARN_(key)( "LR_INPUT driver-events-done\n" );
++    ret = peek_message( &msg, &filter );
++    if (lr_trace) WARN_(key)( "LR_INPUT peek-return ret=%d msg=%x\n", ret, ret > 0 ? msg.message : 0 );
++    if (ret <= 0)
+     {
+         if (!ret)
+         {
+@@ -3683,6 +3695,11 @@
+     {
+         RtlSetLastWin32Error( ERROR_NOACCESS );
+         return FALSE;
++    }
++    if (msg.message == WM_SYSCHAR && getenv( "LIGHTROOM_OMARCHY_INPUT_TIMING" ))
++    {
++        lr_pending_syschar = 0;
++        WARN_(key)( "LR_INPUT peek hwnd=%p flags=%x\n", msg.hwnd, flags );
+     }
+     *msg_out = msg;
+     return TRUE;
+@@ -4876,6 +4893,8 @@
+         return user_driver->pClipboardWindowProc( hwnd, msg, wparam, lparam );
+ 
+     case NtUserGetDispatchParams:
++        if (msg == WM_SYSCHAR && getenv( "LIGHTROOM_OMARCHY_INPUT_TIMING" ))
++            WARN_(key)( "LR_INPUT dispatch hwnd=%p\n", hwnd );
+         if (!hwnd) return FALSE;
+         if (init_window_call_params( result_info, hwnd, msg, wparam, lparam,
+                                      ansi, WMCHAR_MAP_DISPATCHMESSAGE ))
+@@ -4973,6 +4992,11 @@
+                      debugstr_msg_name(message, msg->hwnd), msg->lParam, debugstr_wn(wp, len) );
+         for (i = 0; i < len; i++)
+             NtUserPostMessage( msg->hwnd, message, wp[i], msg->lParam );
++        if (message == WM_SYSCHAR && getenv( "LIGHTROOM_OMARCHY_INPUT_TIMING" ))
++        {
++            lr_pending_syschar = 64;
++            WARN_(key)( "LR_INPUT posted\n" );
++        }
+     }
+     return TRUE;
+ }
+--- a/dlls/win32u/defwnd.c
++++ b/dlls/win32u/defwnd.c
+@@ -29,6 +29,7 @@
+ #include "wine/server.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(win);
++WINE_DECLARE_DEBUG_CHANNEL(key);
+ 
+ #define WINE_MOUSE_HANDLE       ((HANDLE)1)
+ #define WINE_KEYBOARD_HANDLE    ((HANDLE)2)
+@@ -2450,6 +2451,10 @@
+ {
+     LRESULT result = 0;
+ 
++    if ((msg == WM_SYSCHAR || (msg == WM_SYSCOMMAND && (wparam & 0xfff0) == SC_KEYMENU)) &&
++        getenv( "LIGHTROOM_OMARCHY_INPUT_TIMING" ))
++        WARN_(key)( "LR_INPUT default hwnd=%p msg=%x\n", hwnd, msg );
++
+     switch (msg)
+     {
+     case WM_NCCREATE:
