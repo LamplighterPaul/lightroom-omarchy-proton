@@ -1,0 +1,54 @@
+diff --git i/dlls/win32u/menu.c w/dlls/win32u/menu.c
+index dda7d11..028d274 100644
+--- i/dlls/win32u/menu.c
++++ w/dlls/win32u/menu.c
+@@ -32,6 +32,18 @@
+ WINE_DEFAULT_DEBUG_CHANNEL(menu);
+ WINE_DECLARE_DEBUG_CHANNEL(accel);
+ 
++/* A Lightroom-only layout preference. Keep item rectangles authoritative for
++ * painting, hit testing, accessibility and popup placement. */
++static BOOL lightroom_center_menus(void)
++{
++    const WCHAR *name, *slash;
++    const char *enabled = getenv( "LIGHTROOM_OMARCHY_CENTER_MENUS" );
++    if (!enabled || strcmp( enabled, "1" )) return FALSE;
++    name = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
++    if ((slash = wcsrchr( name, '\\' ))) name = slash + 1;
++    if ((slash = wcsrchr( name, '/' ))) name = slash + 1;
++    return !wcsicmp( name, u"lightroom.exe" );
++}
+ 
+ /* menu item structure */
+ struct menu_item
+@@ -2106,7 +2118,7 @@ static void calc_menu_item_size( HDC hdc, struct menu_item *item, HWND owner, IN
+             item->rect.right  += rc.right - rc.left;
+             item_height = max( max( item_height, txt_height ),
+                                get_system_metrics( SM_CYMENU ) - 1 );
+-            item->rect.right +=  2 * menucharsize.cx;
++            item->rect.right += (lightroom_center_menus() ? 4 : 2) * menucharsize.cx;
+         }
+         else
+         {
+@@ -2195,6 +2207,21 @@ static void calc_menu_bar_size( HDC hdc, RECT *rect, struct menu *menu, HWND own
+     menu->Height = menu->items_rect.bottom - menu->items_rect.top;
+     rect->bottom = menu->items_rect.bottom;
+ 
++    /* Center each complete row, including wrapped narrow-window menus. Do not
++     * override explicit Windows right-justification semantics. */
++    if (help_pos == ~0u && lightroom_center_menus())
++    {
++        for (start = 0; start < menu->nItems; start = i)
++        {
++            int shift;
++            for (i = start + 1; i < menu->nItems; ++i)
++                if (menu->items[i].rect.top != menu->items[start].rect.top) break;
++            shift = (menu->Width - menu->items[i - 1].rect.right) / 2;
++            if (shift > 0)
++                for (UINT j = start; j < i; ++j) OffsetRect( &menu->items[j].rect, shift, 0 );
++        }
++    }
++
+     /* Flush right all items between the MF_RIGHTJUSTIFY and */
+     /* the last item (if several lines, only move the last line) */
+     if (help_pos == ~0u) return;

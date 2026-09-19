@@ -1,0 +1,7 @@
+[Unit]
+Description=Check upstream releases for Lightroom Omarchy Proton
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/Development/lightroom-omarchy-proton/omarchy/check-upstream.py --output %h/.local/state/lightroom-omarchy-proton/upstream.json
+NoNewPrivileges=yes

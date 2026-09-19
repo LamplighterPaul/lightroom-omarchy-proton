@@ -1,3 +1,10 @@
+# lightroom-omarchy-proton
+
+A Lightroom-focused GE-Proton fork for Omarchy by Paul Zammit.
+See [our patch set, build provenance and current limits](omarchy/README.md).
+
+The upstream GE documentation follows.
+
 > [!Caution]
 >  **Myself (GloriousEggroll) and this project (GE-Proton) are not affiliated with any other websites related to GE-Proton. There is no existing website for GE-Proton other than this GitHub repository.**
 

@@ -1,0 +1,17 @@
+{
+  "name": "lightroom-omarchy-proton",
+  "version": "11.7-1",
+  "repository": "GloriousEggroll/proton-ge-custom",
+  "tag": "GE-Proton11-7",
+  "commit": "c191f35dcebbeccfacd3b4c6f6eea026e588c1c2",
+  "archive": "GE-Proton11-7-x86_64.tar.gz",
+  "sha256": "c5448b76a230384e2d7bc6beb5ccb97bafb7e2c3b6c527cb03a1a546bbcb00a0",
+  "sdk": "registry.gitlab.steamos.cloud/proton/steamrt4/sdk@sha256:913ddc837506e7a628f4c06c5c2b6817c60c2ec8ddc17a3480c33ac2845534dc",
+  "patches": [
+    "preserve-prefix-username.patch",
+    "shcore-monitor-scale.patch",
+    "lightroom-centered-menu.patch",
+    "d2d1-colormanagement-experimental.patch",
+    "firewall-rule-enumerator.patch"
+  ]
+}
