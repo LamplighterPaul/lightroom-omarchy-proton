@@ -65,3 +65,35 @@ probe passes through `ext-ms-win-uiacore-l1-1-2.dll`. Upstream's implementation 
 still a no-op; this is not complete UI Automation resource cleanup. Testing the
 next shutdown exposed an additional ntdll threadpool assertion (`!pool->shutdown`),
 so clean shutdown remains unresolved. Startup/library and scaling still work.
+
+## 11.7-3-rc1 performance candidate
+
+`candidates/11.7-3-rc1.json` pins the exact components tested in the
+[retained-photo report](https://github.com/LamplighterPaul/omarchy-lightroom-cc/blob/1cfd30a/docs/loupe-retention-2026-09-19.md).
+It combines the 11.7-2 components with deferred threadpool close, optional menu
+phase timing and the opt-in X11 photo-background retention patch. The existing
+experimental colour pass-through remains unchanged. This is a candidate, not
+an update to `upstream.json` or the default runtime.
+
+Assemble from a runtime holding those exact component bytes:
+
+```sh
+python3 omarchy/package.py --archive /path/to/GE-Proton11-7-x86_64.tar.gz \
+  --components-from /path/to/tested-runtime \
+  --recipe omarchy/candidates/11.7-3-rc1.json \
+  --output /path/to/new/lightroom-omarchy-proton-11.7-3-rc1
+```
+
+The packager verifies the GE archive, every selected component, and every source
+patch against the recipe. It extracts a fresh GE distribution and copies only
+those verified components. This avoids including an unrelated experiment from
+shared build outputs. It does not claim that every GE dependency was rebuilt,
+or that the archive is byte-for-byte reproducible. Existing outputs are refused.
+The original `--build` mode remains available for a clean baseline build.
+
+The companion launcher's `--runtime lightroom-omarchy-proton-11.7-3-rc1` selects
+this staged directory. Its recommended environment enables photo retention;
+`LRCC_RETAIN_LOUPE=0` explicitly disables it for comparison. Menu instrumentation
+remains off unless `LIGHTROOM_OMARCHY_MENU_TIMING=1` is set. Close all processes
+in a prefix before selecting a different runtime; the launcher checks live
+Wine mappings to reject a mixed runtime session.
