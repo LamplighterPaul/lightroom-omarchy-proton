@@ -1,0 +1,171 @@
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -25,6 +25,12 @@
+ #include "config.h"
+ 
+ #include <stdarg.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <time.h>
++#include <sys/mman.h>
+ #include <string.h>
+ 
+ #include "windef.h"
+@@ -880,20 +886,82 @@
+ #endif
+ }
+ 
++/* Diagnostic only: fixed-size shared mapping, no readbacks or per-frame I/O.
++ * A row is valid only when its final commit word equals its 1-based index.
++ * Stop at capacity rather than overwrite observations. Initialization precedes
++ * the first measured callback. Consumers must inspect committed rows only. */
++#define LR_PRESENT_CAPACITY 65536
++struct lr_present_row
++{
++    uint64_t start, geometry, clip, blit, flush, end;
++    uint64_t hwnd, surface, thread, outcome, width, height, commit;
++};
++struct lr_present_trace
++{
++    char magic[8];
++    uint64_t capacity;
++    struct lr_present_row rows[LR_PRESENT_CAPACITY];
++};
++static struct lr_present_trace *lr_present_trace;
++static pthread_once_t lr_present_once = PTHREAD_ONCE_INIT;
++static unsigned int lr_present_next;
++
++static void lr_present_init(void)
++{
++    const char *path = getenv( "LIGHTROOM_OMARCHY_PRESENT_TRACE" );
++    char filename[4096];
++    int fd;
++    void *mapping;
++    if (!path || path[0] != '/') return;
++    if (snprintf( filename, sizeof(filename), "%s.%u.bin", path, (unsigned int)getpid() ) >= sizeof(filename)) return;
++    if ((fd = open( filename, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600 )) == -1) return;
++    if (ftruncate( fd, sizeof(struct lr_present_trace) )) { close( fd ); return; }
++    mapping = mmap( NULL, sizeof(struct lr_present_trace), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0 );
++    close( fd );
++    if (mapping == MAP_FAILED) return;
++    lr_present_trace = mapping;
++    memcpy( lr_present_trace->magic, "LRPRES01", 8 );
++    lr_present_trace->capacity = LR_PRESENT_CAPACITY;
++}
++
++static uint64_t lr_present_stamp( BOOL enabled )
++{
++    struct timespec now;
++    if (!enabled) return 0;
++    clock_gettime( CLOCK_MONOTONIC, &now );
++    return (uint64_t)now.tv_sec * 1000000000 + now.tv_nsec;
++}
++
++static void lr_present_record( struct lr_present_row *row )
++{
++    unsigned int index = __sync_fetch_and_add( &lr_present_next, 1 );
++    if (index >= LR_PRESENT_CAPACITY) return;
++    lr_present_trace->rows[index] = *row;
++    __atomic_store_n( &lr_present_trace->rows[index].commit, index + 1, __ATOMIC_RELEASE );
++}
++
+ static void X11DRV_client_surface_present( struct client_surface *client, HDC hdc )
+ {
+     struct x11drv_client_surface *surface = impl_from_client_surface( client );
+-    HWND hwnd = client->hwnd, toplevel = NtUserGetAncestor( hwnd, GA_ROOT );
++    HWND hwnd = client->hwnd, toplevel;
+     struct window_surface *win_surface;
+     struct x11drv_win_data *data;
+     RECT rect_dst, rect;
+     Drawable window;
+     HRGN region;
++    struct lr_present_row trace = {0};
++    BOOL tracing;
++
++    if (surface->lr_eligible) pthread_once( &lr_present_once, lr_present_init );
++    tracing = surface->lr_eligible && lr_present_trace != NULL;
++    trace.start = lr_present_stamp( tracing );
++    toplevel = NtUserGetAncestor( hwnd, GA_ROOT );
+ 
+     client_surface_update_geometry( hwnd, surface );
+     client_surface_update_offscreen( hwnd, surface );
+ 
+-    if (!hdc) return;
++    trace.geometry = lr_present_stamp( tracing );
++    if (!hdc) { trace.outcome = 1; goto trace_done; }
+ 
+     if (hwnd && (win_surface = window_surface_get( hwnd )))
+     {
+@@ -902,7 +970,7 @@
+         {
+             /* GL drawing to ULW window never gets onscreen directly, only though UpdateLayeredWindow(). */
+             window_surface_release( win_surface );
+-            return;
++            trace.outcome = 2; goto trace_done;
+         }
+ 
+         TRACE( "Surface is present.\n" );
+@@ -916,7 +984,7 @@
+                              surface->hdc_src, 0, 0, surface->rect.right, surface->rect.bottom, SRCCOPY, 0 );
+         if (region) NtGdiDeleteObjectApp( region );
+         window_surface_release( win_surface );
+-        return;
++        trace.outcome = 3; goto trace_done;
+     }
+ 
+     window = X11DRV_get_whole_window( toplevel );
+@@ -929,10 +997,12 @@
+     else
+     {
+         region = get_dc_monitor_region( hwnd, hdc ); /* otherwise use the window region for clipping rules */
+-        if (!NtUserGetClientRect( hwnd, &rect_dst, NtUserGetWinMonitorDpi( hwnd, MDT_WINE_RAW_DPI ) )) goto done;
++        if (!NtUserGetClientRect( hwnd, &rect_dst, NtUserGetWinMonitorDpi( hwnd, MDT_WINE_RAW_DPI ) ))
++        { trace.outcome = 5; goto done; }
+         NtUserMapWindowPoints( hwnd, toplevel, (POINT *)&rect_dst, 2, NtUserGetWinMonitorDpi( hwnd, MDT_WINE_RAW_DPI ) );
+     }
+-    if (IsRectEmpty( &rect_dst ) || IsRectEmpty( &surface->rect )) return;
++    if (IsRectEmpty( &rect_dst ) || IsRectEmpty( &surface->rect ))
++    { trace.outcome = 4; goto trace_done; }
+ 
+     if ((data = get_win_data( toplevel )))
+     {
+@@ -945,10 +1015,13 @@
+         set_dc_drawable( surface->hdc_dst, window, &rect_dst, IncludeInferiors );
+     if (region) NtGdiExtSelectClipRgn( surface->hdc_dst, region, RGN_COPY );
+ 
++    trace.clip = lr_present_stamp( tracing );
++    trace.outcome = 6;
+     if (update_layered_overlay_shape( surface, toplevel ) &&
+         NtGdiStretchBlt( surface->hdc_dst, 0, 0, rect_dst.right - rect_dst.left, rect_dst.bottom - rect_dst.top,
+                         surface->hdc_src, 0, 0, surface->rect.right, surface->rect.bottom, SRCCOPY, 0 ))
+     {
++        trace.outcome = 7;
+         pthread_mutex_lock( &lr_client_lock );
+         surface->lr_drawable = window;
+         surface->lr_hwnd = hwnd;
+@@ -956,10 +1029,23 @@
+         surface->lr_presented = TRUE;
+         pthread_mutex_unlock( &lr_client_lock );
+     }
++    trace.blit = lr_present_stamp( tracing );
+     XFlush( gdi_display );
++    trace.flush = lr_present_stamp( tracing );
+ 
+ done:
+     if (region) NtGdiDeleteObjectApp( region );
++trace_done:
++    if (tracing)
++    {
++        trace.end = lr_present_stamp( TRUE );
++        trace.hwnd = (uintptr_t)hwnd;
++        trace.surface = (uintptr_t)surface;
++        trace.thread = (uintptr_t)pthread_self();
++        trace.width = surface->rect.right - surface->rect.left;
++        trace.height = surface->rect.bottom - surface->rect.top;
++        lr_present_record( &trace );
++    }
+ }
+ 
+ static const struct client_surface_funcs x11drv_client_surface_funcs =
