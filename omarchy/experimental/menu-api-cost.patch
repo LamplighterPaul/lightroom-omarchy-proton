@@ -1,0 +1,175 @@
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -3642,6 +3642,8 @@
+ /***********************************************************************
+  *           NtUserPeekMessage  (win32u.@)
+  */
++extern void lr_menu_cost_begin(void);
++extern void lr_menu_cost_finish(void);
+ static __thread unsigned lr_pending_syschar;
+ 
+ BOOL WINAPI NtUserPeekMessage( MSG *msg_out, HWND hwnd, UINT first, UINT last, UINT flags )
+@@ -3653,6 +3655,7 @@
+ 
+     if (lr_trace)
+     {
++        lr_menu_cost_finish();
+         lr_pending_syschar--;
+         WARN_(key)( "LR_INPUT peek-enter first=%x last=%x flags=%x\n", first, last, flags );
+     }
+@@ -4995,6 +4998,7 @@
+         if (message == WM_SYSCHAR && getenv( "LIGHTROOM_OMARCHY_INPUT_TIMING" ))
+         {
+             lr_pending_syschar = 64;
++            lr_menu_cost_begin();
+             WARN_(key)( "LR_INPUT posted\n" );
+         }
+     }
+--- a/dlls/win32u/menu.c
++++ b/dlls/win32u/menu.c
+@@ -23,6 +23,8 @@
+ #pragma makedep unix
+ #endif
+ 
++#include <time.h>
++
+ #define OEMRESOURCE
+ #include "ntgdi_private.h"
+ #include "ntuser_private.h"
+@@ -31,6 +33,48 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(menu);
+ WINE_DECLARE_DEBUG_CHANNEL(accel);
++
++/* Diagnostic aggregate costs only between posting a menu character and polling it. */
++struct lr_menu_cost { BOOL active; ULONGLONG wall, cpu, elapsed[4]; unsigned count[4]; };
++static __thread struct lr_menu_cost lr_cost;
++static ULONGLONG lr_cost_clock( clockid_t clock )
++{
++    struct timespec ts;
++    clock_gettime( clock, &ts );
++    return (ULONGLONG)ts.tv_sec * 1000000000 + ts.tv_nsec;
++}
++void lr_menu_cost_begin(void)
++{
++    if (!getenv( "LIGHTROOM_OMARCHY_INPUT_COST" )) return;
++    memset( &lr_cost, 0, sizeof(lr_cost) );
++    lr_cost.wall = lr_cost_clock( CLOCK_MONOTONIC );
++    lr_cost.cpu = lr_cost_clock( CLOCK_THREAD_CPUTIME_ID );
++    lr_cost.active = TRUE;
++}
++void lr_menu_cost_finish(void)
++{
++    ULONGLONG wall, cpu;
++    if (!lr_cost.active) return;
++    wall = lr_cost_clock( CLOCK_MONOTONIC ) - lr_cost.wall;
++    cpu = lr_cost_clock( CLOCK_THREAD_CPUTIME_ID ) - lr_cost.cpu;
++    lr_cost.active = FALSE;
++    WARN( "LR_COST wall_ns=%llu cpu_ns=%llu enable_count=%u enable_ns=%llu check_count=%u check_ns=%llu info_count=%u info_ns=%llu draw_count=%u draw_ns=%llu\n",
++          (unsigned long long)wall, (unsigned long long)cpu,
++          lr_cost.count[0], (unsigned long long)lr_cost.elapsed[0],
++          lr_cost.count[1], (unsigned long long)lr_cost.elapsed[1],
++          lr_cost.count[2], (unsigned long long)lr_cost.elapsed[2],
++          lr_cost.count[3], (unsigned long long)lr_cost.elapsed[3] );
++}
++static ULONGLONG lr_menu_api_start(void)
++{
++    return lr_cost.active ? lr_cost_clock( CLOCK_MONOTONIC ) : 0;
++}
++static void lr_menu_api_end( unsigned kind, ULONGLONG start )
++{
++    if (!start) return;
++    lr_cost.count[kind]++;
++    lr_cost.elapsed[kind] += lr_cost_clock( CLOCK_MONOTONIC ) - start;
++}
+ 
+ /* A Lightroom-only layout preference. Keep item rectangles authoritative for
+  * painting, hit testing, accessibility and popup placement. */
+@@ -748,7 +792,7 @@
+ /*******************************************************************
+  *           NtUserCheckMenuItem    (win32u.@)
+  */
+-DWORD WINAPI NtUserCheckMenuItem( HMENU handle, UINT id, UINT flags )
++static DWORD lr_original_NtUserCheckMenuItem( HMENU handle, UINT id, UINT flags )
+ {
+     struct menu_item *item;
+     struct menu *menu;
+@@ -766,10 +810,18 @@
+     return ret;
+ }
+ 
++DWORD WINAPI NtUserCheckMenuItem( HMENU handle, UINT id, UINT flags )
++{
++    ULONGLONG start = lr_menu_api_start();
++    DWORD ret = lr_original_NtUserCheckMenuItem( handle, id, flags );
++    lr_menu_api_end( 1, start );
++    return ret;
++}
++
+ /**********************************************************************
+  *           NtUserEnableMenuItem    (win32u.@)
+  */
+-BOOL WINAPI NtUserEnableMenuItem( HMENU handle, UINT id, UINT flags )
++static BOOL lr_original_NtUserEnableMenuItem( HMENU handle, UINT id, UINT flags )
+ {
+     UINT oldflags, pos;
+     struct menu *menu;
+@@ -812,10 +864,18 @@
+     return oldflags;
+ }
+ 
++BOOL WINAPI NtUserEnableMenuItem( HMENU handle, UINT id, UINT flags )
++{
++    ULONGLONG start = lr_menu_api_start();
++    BOOL ret = lr_original_NtUserEnableMenuItem( handle, id, flags );
++    lr_menu_api_end( 0, start );
++    return ret;
++}
++
+ /**********************************************************************
+  *           NtUserDrawMenuBar    (win32u.@)
+  */
+-BOOL WINAPI NtUserDrawMenuBar( HWND hwnd )
++static BOOL lr_original_NtUserDrawMenuBar( HWND hwnd )
+ {
+     HMENU handle;
+ 
+@@ -835,6 +895,14 @@
+ 
+     return NtUserSetWindowPos( hwnd, 0, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE |
+                                SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED );
++}
++
++BOOL WINAPI NtUserDrawMenuBar( HWND hwnd )
++{
++    ULONGLONG start = lr_menu_api_start();
++    BOOL ret = lr_original_NtUserDrawMenuBar( hwnd );
++    lr_menu_api_end( 3, start );
++    return ret;
+ }
+ 
+ /**********************************************************************
+@@ -1307,7 +1375,7 @@
+ /**********************************************************************
+  *           NtUserThunkedMenuItemInfo    (win32u.@)
+  */
+-UINT WINAPI NtUserThunkedMenuItemInfo( HMENU handle, UINT pos, UINT flags, UINT method,
++static UINT lr_original_NtUserThunkedMenuItemInfo( HMENU handle, UINT pos, UINT flags, UINT method,
+                                        MENUITEMINFOW *info, UNICODE_STRING *str )
+ {
+     struct menu *menu;
+@@ -1383,6 +1451,14 @@
+         return FALSE;
+     }
+ 
++    return ret;
++}
++
++UINT WINAPI NtUserThunkedMenuItemInfo( HMENU handle, UINT pos, UINT flags, UINT method, MENUITEMINFOW *info, UNICODE_STRING *str )
++{
++    ULONGLONG start = lr_menu_api_start();
++    UINT ret = lr_original_NtUserThunkedMenuItemInfo( handle, pos, flags, method, info, str );
++    lr_menu_api_end( 2, start );
+     return ret;
+ }
+ 
