@@ -1,0 +1,107 @@
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -26,6 +26,9 @@
+ 
+ #include <stdarg.h>
+ #include <string.h>
++#include <stdio.h>
++#include <time.h>
++#include <unistd.h>
+ 
+ #include "windef.h"
+ #include "winbase.h"
+@@ -822,6 +825,40 @@
+ #endif
+ }
+ 
++/* Private-fixture appearance diagnostic. Readback is intentionally intrusive. */
++void lrcc_trace_pixel( const char *phase, Window window, HWND hwnd, Window source )
++{
++    const char *enabled = getenv( "LRCC_PIXEL_TRACE" );
++    const char *trigger = getenv( "LRCC_PIXEL_TRACE_TRIGGER" );
++    const char *display = getenv( "DISPLAY" );
++    Window root;
++    unsigned int width, height, border, depth;
++    int x, y;
++    XImage *image;
++    struct timespec stamp;
++    unsigned long pixel;
++    FILE *control;
++    int mode;
++
++    if (!enabled || strcmp( enabled, "1" ) || !display || strcmp( display, ":1" ) ||
++        !trigger || access( trigger, F_OK ) || !window) return;
++    if (!(control = fopen( trigger, "r" ))) return;
++    mode = fgetc( control );
++    fclose( control );
++    if (mode == 't' && strncmp( phase, "pat-", 4 )) return;
++    if (mode == 'b' && strcmp( phase, "gpu-before" )) return;
++    if ((mode == 'a' || mode == 's') && strcmp( phase, "gpu-after" )) return;
++    if (mode == 's') { XSync( gdi_display, False ); return; }
++    if (!XGetGeometry( gdi_display, window, &root, &x, &y, &width, &height, &border, &depth ) ||
++        width < 2000 || height < 1000) return;
++    if (!(image = XGetImage( gdi_display, window, 1400, 700, 1, 1, AllPlanes, ZPixmap ))) return;
++    pixel = XGetPixel( image, 0, 0 );
++    clock_gettime( CLOCK_REALTIME, &stamp );
++    fprintf( stderr, "LRCC_PIXEL %ld.%09ld tid=%lx phase=%s dst=%lx hwnd=%p src=%lx rgb=%06lx\n",
++             stamp.tv_sec, stamp.tv_nsec, (unsigned long)pthread_self(), phase, window, hwnd, source, pixel & 0xffffff );
++    XDestroyImage( image );
++}
++
+ static void X11DRV_client_surface_present( struct client_surface *client, HDC hdc )
+ {
+     struct x11drv_client_surface *surface = impl_from_client_surface( client );
+@@ -887,10 +924,12 @@
+         set_dc_drawable( surface->hdc_dst, window, &rect_dst, IncludeInferiors );
+     if (region) NtGdiExtSelectClipRgn( surface->hdc_dst, region, RGN_COPY );
+ 
++    lrcc_trace_pixel( "gpu-before", window, hwnd, surface->window );
+     if (update_layered_overlay_shape( surface, toplevel ))
+         NtGdiStretchBlt( surface->hdc_dst, 0, 0, rect_dst.right - rect_dst.left, rect_dst.bottom - rect_dst.top,
+                          surface->hdc_src, 0, 0, surface->rect.right, surface->rect.bottom, SRCCOPY, 0 );
+     XFlush( gdi_display );
++    lrcc_trace_pixel( "gpu-after", window, hwnd, surface->window );
+ 
+ done:
+     if (region) NtGdiDeleteObjectApp( region );
+--- a/dlls/winex11.drv/bitblt.c
++++ b/dlls/winex11.drv/bitblt.c
+@@ -793,11 +793,13 @@
+         }
+         break;
+     }
++    lrcc_trace_pixel( "pat-before", physDev->drawable, NtUserWindowFromDC( dev->hdc ), 0 );
+     XFillRectangle( gdi_display, physDev->drawable, physDev->gc,
+                     physDev->dc_rect.left + dst->visrect.left,
+                     physDev->dc_rect.top + dst->visrect.top,
+                     dst->visrect.right - dst->visrect.left,
+                     dst->visrect.bottom - dst->visrect.top );
++    lrcc_trace_pixel( "pat-after", physDev->drawable, NtUserWindowFromDC( dev->hdc ), 0 );
+     add_device_bounds( physDev, &dst->visrect );
+     return TRUE;
+ }
+@@ -1866,12 +1868,14 @@
+ #endif /* HAVE_LIBXSHAPE */
+     }
+ 
++    lrcc_trace_pixel( "gdi-before", surface->window, 0, 0 );
+     if (!put_shm_image( ximage, &surface->image->shminfo, surface->window, surface->gc, &rect, dirty ))
+         XPutImage( gdi_display, surface->window, surface->gc, ximage, dirty->left,
+                    dirty->top, rect.left + dirty->left, rect.top + dirty->top,
+                    dirty->right - dirty->left, dirty->bottom - dirty->top );
+ 
+     XFlush( gdi_display );
++    lrcc_trace_pixel( "gdi-after", surface->window, 0, 0 );
+ 
+     return TRUE;
+ }
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -731,6 +731,7 @@
+ extern void release_win_data( struct x11drv_win_data *data );
+ extern void set_window_parent( struct x11drv_win_data *data, Window parent );
+ extern Window X11DRV_get_whole_window( HWND hwnd );
++extern void lrcc_trace_pixel( const char *phase, Window window, HWND hwnd, Window source );
+ extern Window get_dummy_parent(void);
+ 
+ extern void set_surface_window_rects( struct window_surface *window_surface, const struct window_rects *rects );

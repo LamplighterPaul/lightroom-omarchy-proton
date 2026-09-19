@@ -1,0 +1,199 @@
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -384,6 +384,11 @@
+ struct x11drv_client_surface
+ {
+     struct client_surface client;
++    struct list lr_entry;
++    Window lr_drawable;
++    HWND lr_hwnd;
++    RECT lr_rect;
++    BOOL lr_eligible, lr_presented;
+     XWindowChanges changes;
+     Colormap colormap;
+     Window window;
+@@ -411,6 +416,49 @@
+     DWORD shape_last_sample;
+ };
+ 
++static struct list lr_client_surfaces = LIST_INIT(lr_client_surfaces);
++static pthread_mutex_t lr_client_lock = PTHREAD_MUTEX_INITIALIZER;
++
++/* Lightroom redraws loupeView with a full-client PATCOPY before its next GPU
++ * frame. On X11 that fill overwrites the retained photo in the parent drawable.
++ * Keep this app workaround opt-in, and only while a live native presenter owns
++ * the window and has successfully copied at least one frame. */
++BOOL lrcc_preserve_loupe_background( const X11DRV_PDEVICE *dev, const struct bitblt_coords *dst, DWORD rop )
++{
++    const char *enabled = getenv( "LIGHTROOM_OMARCHY_RETAIN_LOUPE" );
++    struct x11drv_client_surface *surface;
++    BOOL ret = FALSE;
++
++    if (!enabled || strcmp( enabled, "1" ) || rop != PATCOPY || dst->x || dst->y) return FALSE;
++    /* No NtUser calls here: this path runs under the DC lock. Match the
++     * destination cached by a successful native presentation instead. */
++    pthread_mutex_lock( &lr_client_lock );
++    LIST_FOR_EACH_ENTRY( surface, &lr_client_surfaces, struct x11drv_client_surface, lr_entry )
++        if (surface->lr_eligible && surface->lr_presented && surface->lr_hwnd == dev->dc_hwnd &&
++            surface->lr_drawable == dev->drawable &&
++            surface->lr_rect.left == dev->dc_rect.left && surface->lr_rect.top == dev->dc_rect.top &&
++            surface->lr_rect.right - surface->lr_rect.left == dst->width &&
++            surface->lr_rect.bottom - surface->lr_rect.top == dst->height &&
++            ReadAcquire( &surface->client.native_ref ) > 0 &&
++            ReadAcquire( &surface->client.presentation_owner ))
++        {
++            ret = TRUE;
++            break;
++        }
++    pthread_mutex_unlock( &lr_client_lock );
++    return ret;
++}
++
++static BOOL lrcc_is_loupe_window( HWND hwnd )
++{
++    static const WCHAR loupe_class[] = {'l','o','u','p','e','V','i','e','w',0};
++    WCHAR name[64];
++    UNICODE_STRING class_name = {0, sizeof(name), name};
++    return NtUserGetAncestor( hwnd, GA_ROOT ) != hwnd &&
++           NtUserGetClassName( hwnd, FALSE, &class_name ) == 9 &&
++           !memcmp( name, loupe_class, 9 * sizeof(WCHAR) );
++}
++
+ static struct x11drv_client_surface *impl_from_client_surface( struct client_surface *client )
+ {
+     return CONTAINING_RECORD( client, struct x11drv_client_surface, client );
+@@ -420,6 +468,10 @@
+ {
+     struct x11drv_client_surface *surface = impl_from_client_surface( client );
+     HWND hwnd = client->hwnd;
++
++    pthread_mutex_lock( &lr_client_lock );
++    list_remove( &surface->lr_entry );
++    pthread_mutex_unlock( &lr_client_lock );
+ 
+     TRACE( "%s\n", debugstr_client_surface( client ) );
+ 
+@@ -445,6 +497,12 @@
+     Window client_window = surface->window;
+     struct x11drv_win_data *data;
+     HWND hwnd = client->hwnd;
++
++    pthread_mutex_lock( &lr_client_lock );
++    surface->lr_drawable = None;
++    surface->lr_hwnd = NULL;
++    surface->lr_presented = FALSE;
++    pthread_mutex_unlock( &lr_client_lock );
+ 
+     TRACE( "%s\n", debugstr_client_surface( client ) );
+ 
+@@ -887,9 +945,17 @@
+         set_dc_drawable( surface->hdc_dst, window, &rect_dst, IncludeInferiors );
+     if (region) NtGdiExtSelectClipRgn( surface->hdc_dst, region, RGN_COPY );
+ 
+-    if (update_layered_overlay_shape( surface, toplevel ))
++    if (update_layered_overlay_shape( surface, toplevel ) &&
+         NtGdiStretchBlt( surface->hdc_dst, 0, 0, rect_dst.right - rect_dst.left, rect_dst.bottom - rect_dst.top,
+-                         surface->hdc_src, 0, 0, surface->rect.right, surface->rect.bottom, SRCCOPY, 0 );
++                        surface->hdc_src, 0, 0, surface->rect.right, surface->rect.bottom, SRCCOPY, 0 ))
++    {
++        pthread_mutex_lock( &lr_client_lock );
++        surface->lr_drawable = window;
++        surface->lr_hwnd = hwnd;
++        surface->lr_rect = rect_dst;
++        surface->lr_presented = TRUE;
++        pthread_mutex_unlock( &lr_client_lock );
++    }
+     XFlush( gdi_display );
+ 
+ done:
+@@ -952,6 +1018,7 @@
+     if (!colormap) return None;
+ 
+     if (!(surface = client_surface_create( sizeof(*surface), &x11drv_client_surface_funcs, hwnd ))) goto failed;
++    list_init( &surface->lr_entry );
+     surface->colormap = colormap;
+     surface->raw = raw;
+ 
+@@ -989,6 +1056,11 @@
+ 
+     if (!surface->window && !(surface->window = create_client_window( hwnd, surface->rect, &visual, colormap ))) goto failed;
+ 
++    surface->lr_eligible = !surface->other_process && lrcc_is_loupe_window( hwnd );
++    pthread_mutex_lock( &lr_client_lock );
++    list_add_tail( &lr_client_surfaces, &surface->lr_entry );
++    pthread_mutex_unlock( &lr_client_lock );
++
+     TRACE( "Created %s for client window %lx\n", debugstr_client_surface( &surface->client ), surface->window );
+     *client = &surface->client;
+     return surface->window;
+@@ -1030,6 +1102,7 @@
+                 {
+                     const struct x11drv_escape_set_drawable *data = in_data;
+                     physDev->dc_rect = data->dc_rect;
++                    physDev->dc_hwnd = data->hwnd;
+                     physDev->drawable = data->drawable;
+                     XFreeGC( gdi_display, physDev->gc );
+                     physDev->gc = XCreateGC( gdi_display, physDev->drawable, 0, NULL );
+--- a/dlls/winex11.drv/bitblt.c
++++ b/dlls/winex11.drv/bitblt.c
+@@ -760,6 +760,8 @@
+     BOOL usePat = (((rop >> 4) & 0x0f0000) != (rop & 0x0f0000));
+     const BYTE *opcode = BITBLT_Opcodes[(rop >> 16) & 0xff];
+ 
++    if (lrcc_preserve_loupe_background( physDev, dst, rop )) return TRUE;
++
+     if (usePat && !X11DRV_SetupGCForBrush( physDev )) return TRUE;
+ 
+     XSetFunction( gdi_display, physDev->gc, OP_ROP(*opcode) );
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -121,6 +121,7 @@
+     struct gdi_physdev dev;
+     GC            gc;          /* X Window GC */
+     Drawable      drawable;
++    HWND          dc_hwnd;       /* owning window, captured when the DCE is assigned */
+     RECT          dc_rect;       /* DC rectangle relative to drawable */
+     RECT         *bounds;        /* Graphics bounds */
+     HRGN          region;        /* Device region (visible region & clip region) */
+@@ -354,6 +355,7 @@
+ {
+     enum x11drv_escape_codes code;         /* escape code (X11DRV_SET_DRAWABLE) */
+     Drawable                 drawable;     /* X drawable */
++    HWND                     hwnd;         /* DCE owner, or NULL for raw drawable DCs */
+     int                      mode;         /* ClipByChildren or IncludeInferiors */
+     RECT                     dc_rect;      /* DC rectangle relative to drawable */
+     XVisualInfo              visual;       /* X visual used by drawable, may be unspecified if no change is needed */
+@@ -363,6 +365,7 @@
+ {
+     enum x11drv_escape_codes code;         /* escape code (X11DRV_GET_DRAWABLE) */
+     Drawable                 drawable;     /* X drawable */
++    HWND                     hwnd;         /* DCE owner, or NULL for raw drawable DCs */
+     RECT                     dc_rect;      /* DC rectangle relative to drawable */
+ };
+ 
+@@ -731,6 +734,7 @@
+ extern void release_win_data( struct x11drv_win_data *data );
+ extern void set_window_parent( struct x11drv_win_data *data, Window parent );
+ extern Window X11DRV_get_whole_window( HWND hwnd );
++extern BOOL lrcc_preserve_loupe_background( const X11DRV_PDEVICE *dev, const struct bitblt_coords *dst, DWORD rop );
+ extern Window get_dummy_parent(void);
+ 
+ extern void set_surface_window_rects( struct window_surface *window_surface, const struct window_rects *rects );
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -3501,6 +3501,7 @@
+     int emulated_mode_offset;
+ 
+     escape.code = X11DRV_SET_DRAWABLE;
++    escape.hwnd = hwnd;
+     escape.mode = IncludeInferiors;
+     escape.drawable = 0;
+ 
+@@ -3543,6 +3544,7 @@
+     struct x11drv_escape_set_drawable escape;
+ 
+     escape.code = X11DRV_SET_DRAWABLE;
++    escape.hwnd = NULL;
+     escape.drawable = root_window;
+     escape.mode = IncludeInferiors;
+     escape.dc_rect = NtUserGetVirtualScreenRect( MDT_DEFAULT );
