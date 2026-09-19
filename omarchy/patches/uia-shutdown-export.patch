@@ -1,0 +1,24 @@
+--- a/dlls/uiautomationcore/uia_provider.c
++++ b/dlls/uiautomationcore/uia_provider.c
+@@ -2338,3 +2338,10 @@
+ 
+     return S_OK;
+ }
++
++/* Backported from Wine 11.10: non-aborting shutdown export. */
++HRESULT WINAPI UiaDisconnectAllProviders(void)
++{
++    FIXME("stub\n");
++    return S_OK;
++}
+--- a/dlls/uiautomationcore/uiautomationcore.spec
++++ b/dlls/uiautomationcore/uiautomationcore.spec
+@@ -55,7 +55,7 @@
+ @ stub TransformPattern_Rotate
+ @ stdcall UiaAddEvent(ptr long ptr long ptr long ptr ptr)
+ @ stdcall UiaClientsAreListening()
+-#@ stub UiaDisconnectAllProviders
++@ stdcall UiaDisconnectAllProviders()
+ @ stdcall UiaDisconnectProvider(ptr)
+ @ stdcall UiaEventAddWindow(ptr long)
+ @ stdcall UiaEventRemoveWindow(ptr long)

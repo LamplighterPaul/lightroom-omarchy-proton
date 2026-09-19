@@ -1,6 +1,6 @@
 {
   "name": "lightroom-omarchy-proton",
-  "version": "11.7-1",
+  "version": "11.7-2",
   "repository": "GloriousEggroll/proton-ge-custom",
   "tag": "GE-Proton11-7",
   "commit": "c191f35dcebbeccfacd3b4c6f6eea026e588c1c2",
@@ -12,6 +12,7 @@
     "shcore-monitor-scale.patch",
     "lightroom-centered-menu.patch",
     "d2d1-colormanagement-experimental.patch",
-    "firewall-rule-enumerator.patch"
+    "firewall-rule-enumerator.patch",
+    "uia-shutdown-export.patch"
   ]
 }

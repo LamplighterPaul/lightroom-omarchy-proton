@@ -30,7 +30,7 @@ if sha(args.archive) != PIN['sha256']:
 if args.output.exists():
     raise SystemExit('Output already exists; choose a new candidate directory')
 components = {}
-for module in ('advapi32', 'shcore', 'd2d1', 'hnetcfg'):
+for module in ('advapi32', 'shcore', 'd2d1', 'hnetcfg', 'uiautomationcore'):
     for arch in ('x86_64-windows', 'i386-windows'):
         components[f'files/lib/wine/{arch}/{module}.dll'] = args.build / f'dlls/{module}/{arch}/{module}.dll'
 components['files/lib/wine/x86_64-unix/win32u.so'] = args.build / 'dlls/win32u/win32u.so'

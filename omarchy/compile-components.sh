@@ -24,4 +24,6 @@ make -j8 dlls/advapi32/x86_64-windows/advapi32.dll \
   dlls/d2d1/i386-windows/d2d1.dll \
   dlls/hnetcfg/x86_64-windows/hnetcfg.dll \
   dlls/hnetcfg/i386-windows/hnetcfg.dll \
+  dlls/uiautomationcore/x86_64-windows/uiautomationcore.dll \
+  dlls/uiautomationcore/i386-windows/uiautomationcore.dll \
   dlls/win32u/win32u.so

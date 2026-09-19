@@ -57,3 +57,11 @@ Steam is not required. UMU still supplies compatibility metadata to Proton;
 removing metadata is not evidence of reduced rendering overhead. Xalia and
 per-game ProtonFixes are disabled by the Lightroom launcher. Further trimming
 must be measured and preserve authentication, fonts, codecs and graphics.
+
+## 11.7-2 shutdown export
+
+Backports Wine 11.10's non-aborting `UiaDisconnectAllProviders` export. The API-set
+probe passes through `ext-ms-win-uiacore-l1-1-2.dll`. Upstream's implementation is
+still a no-op; this is not complete UI Automation resource cleanup. Testing the
+next shutdown exposed an additional ntdll threadpool assertion (`!pool->shutdown`),
+so clean shutdown remains unresolved. Startup/library and scaling still work.

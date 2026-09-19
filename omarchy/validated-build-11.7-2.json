@@ -1,0 +1,41 @@
+{
+  "name": "lightroom-omarchy-proton",
+  "version": "11.7-2",
+  "repository": "GloriousEggroll/proton-ge-custom",
+  "tag": "GE-Proton11-7",
+  "commit": "c191f35dcebbeccfacd3b4c6f6eea026e588c1c2",
+  "archive": "GE-Proton11-7-x86_64.tar.gz",
+  "sha256": "c5448b76a230384e2d7bc6beb5ccb97bafb7e2c3b6c527cb03a1a546bbcb00a0",
+  "sdk": "registry.gitlab.steamos.cloud/proton/steamrt4/sdk@sha256:913ddc837506e7a628f4c06c5c2b6817c60c2ec8ddc17a3480c33ac2845534dc",
+  "patches": [
+    "preserve-prefix-username.patch",
+    "shcore-monitor-scale.patch",
+    "lightroom-centered-menu.patch",
+    "d2d1-colormanagement-experimental.patch",
+    "firewall-rule-enumerator.patch",
+    "uia-shutdown-export.patch"
+  ],
+  "build_kind": "GE binary distribution with source-rebuilt Wine components",
+  "components": {
+    "files/lib/wine/x86_64-windows/advapi32.dll": "0983c5028949991d31195a0b80de0ca0b514923de692fdfa1c88aa2b7561c6e1",
+    "files/lib/wine/i386-windows/advapi32.dll": "dd57fa612e8ed4db83b15a45d22eefac739ffaa9219ba6d1ad3be4c62ef27de5",
+    "files/lib/wine/x86_64-windows/shcore.dll": "90b778175f93138ea788b9b90884ead42207ed26f88bce6283907b6a7c4cb1ee",
+    "files/lib/wine/i386-windows/shcore.dll": "1af1f5f4131eae6b08028eb484994349a2dc295b6fbd81e0833e26e1f3dd48fb",
+    "files/lib/wine/x86_64-windows/d2d1.dll": "52cfc269d63329366761751362e540d26ab0ddaa886f89372d9c9b6013c16c4c",
+    "files/lib/wine/i386-windows/d2d1.dll": "cf782559c778b55d4319586800b3db2b183a0feb5fba34aaa281693e30c085da",
+    "files/lib/wine/x86_64-windows/hnetcfg.dll": "8acd1549479e6934b31babdf7ab2ef6277d3dda0d8f9d0d058974482446cc62e",
+    "files/lib/wine/i386-windows/hnetcfg.dll": "d2f9c92ac57c854f3c568ec17ef90557b394e173220b93ae6fabd4419851375f",
+    "files/lib/wine/x86_64-windows/uiautomationcore.dll": "80802ec5f5ecb86293c5f5d817456f324766464a324b4ae40b68ae043265dab6",
+    "files/lib/wine/i386-windows/uiautomationcore.dll": "e6e4bbd6547ad98016f635775a51d0ae20bf7ec33a2e2cd9114fee4a8af25b64",
+    "files/lib/wine/x86_64-unix/win32u.so": "025219199da5bcb3a83deafe55f59de1619870a348212978965ca748397732f7"
+  },
+  "patch_sha256": {
+    "preserve-prefix-username.patch": "3dce0e24b102f463a5112a2075940890f793282cfc437dddf4e5f6f6ffa429a5",
+    "shcore-monitor-scale.patch": "09ed6751891b35ec81b5d558e4e2e38aaf6f91f16362e3512070be5ea43719cc",
+    "lightroom-centered-menu.patch": "f32962cb66f1838362038169fba36577a325caf456a934f09b920089d7ca3c8c",
+    "d2d1-colormanagement-experimental.patch": "fb48f478ade4f093317ebf79d9c5b784bf957e960bec43f291d28dd178eb393a",
+    "firewall-rule-enumerator.patch": "09e5311e8ec163eaa68d85a07dbf7247d0c119bc5f1fbf0aa2928d2bccaa2c2c",
+    "uia-shutdown-export.patch": "997359b3778faac3200c413067b74cd9af4ef0548b253705a7e7382d8bad59ad"
+  },
+  "experimental_colour_passthrough": true
+}
