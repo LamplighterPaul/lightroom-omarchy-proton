@@ -1,0 +1,172 @@
+--- a/dlls/winex11.drv/xrandr.c
++++ b/dlls/winex11.drv/xrandr.c
+@@ -46,6 +46,7 @@
+ VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDisplayKHR)
+ 
+ static void *xrandr_handle;
++static int xrandr_opcode, xrandr_error_base;
+ 
+ static VkInstance vk_instance; /* Vulkan instance for XRandR functions */
+ static VkResult (*p_vkGetRandROutputDisplayEXT)( VkPhysicalDevice, Display *, RROutput, VkDisplayKHR * );
+@@ -394,6 +395,35 @@
+ 
+ #ifdef HAVE_XRRGETPROVIDERRESOURCES
+ 
++static int crtc_query_error_handler( Display *display, XErrorEvent *event, void *arg )
++{
++    const RRCrtc *crtc = arg;
++
++    return event->request_code == xrandr_opcode &&
++           event->minor_code == X_RRGetCrtcInfo &&
++           event->error_code == xrandr_error_base + BadRRCrtc &&
++           event->resourceid == *crtc;
++}
++
++static XRRCrtcInfo *xrandr_get_crtc_info( XRRScreenResources *resources, RRCrtc crtc )
++{
++    XRRCrtcInfo *info;
++
++    /* Output reconfiguration can retire a CRTC after the resources snapshot.
++     * XRRGetCrtcInfo returns NULL on failure, but Xlib first invokes its error
++     * handler, whose default action is to terminate the process. Let callers
++     * take their existing missing-CRTC paths for this specific query error.
++     * The reply is synchronous, so no additional XSync round trip is needed. */
++    X11DRV_expect_error( gdi_display, crtc_query_error_handler, &crtc );
++    info = pXRRGetCrtcInfo( gdi_display, resources, crtc );
++    if (X11DRV_check_error())
++    {
++        if (info) pXRRFreeCrtcInfo( info );
++        return NULL;
++    }
++    return info;
++}
++
+ static struct current_mode
+ {
+     ULONG_PTR id;
+@@ -506,7 +536,7 @@
+ 
+     for (i = 0; i < resources->ncrtc; ++i)
+     {
+-        if (!(crtc_info = pXRRGetCrtcInfo( gdi_display, resources, resources->crtcs[i] )))
++        if (!(crtc_info = xrandr_get_crtc_info( resources, resources->crtcs[i] )))
+             continue;
+ 
+         if (crtc_info->mode != None)
+@@ -706,7 +736,7 @@
+ 
+     for (crtc_idx = 0; crtc_idx < output_info->ncrtc; ++crtc_idx)
+     {
+-        crtc_info = pXRRGetCrtcInfo( gdi_display, resources, output_info->crtcs[crtc_idx] );
++        crtc_info = xrandr_get_crtc_info( resources, output_info->crtcs[crtc_idx] );
+         if (!crtc_info)
+             continue;
+ 
+@@ -740,7 +770,7 @@
+     if (!output_info || output_info->connection != RR_Connected || !output_info->crtc)
+         goto fallback;
+ 
+-    crtc_info = pXRRGetCrtcInfo( gdi_display, resources, output_info->crtc );
++    crtc_info = xrandr_get_crtc_info( resources, output_info->crtc );
+     if (!crtc_info || !crtc_info->mode)
+         goto fallback;
+ 
+@@ -761,7 +791,7 @@
+     WARN("Primary is set to a disconnected XRandR output.\n");
+     for (i = 0; i < resources->ncrtc; ++i)
+     {
+-        crtc_info = pXRRGetCrtcInfo( gdi_display, resources, resources->crtcs[i] );
++        crtc_info = xrandr_get_crtc_info( resources, resources->crtcs[i] );
+         if (!crtc_info)
+             continue;
+ 
+@@ -950,7 +980,7 @@
+         /* Find primary provider */
+         for (j = 0; primary_provider == -1 && j < provider_info->ncrtcs; ++j)
+         {
+-            crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, provider_info->crtcs[j] );
++            crtc_info = xrandr_get_crtc_info( screen_resources, provider_info->crtcs[j] );
+             if (!crtc_info)
+                 continue;
+ 
+@@ -1066,7 +1096,7 @@
+         detached = FALSE;
+         if (output_info->crtc)
+         {
+-            crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, output_info->crtc );
++            crtc_info = xrandr_get_crtc_info( screen_resources, output_info->crtc );
+             if (!crtc_info)
+                 goto done;
+         }
+@@ -1090,7 +1120,7 @@
+                     continue;
+                 }
+ 
+-                enum_crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, enum_output_info->crtc );
++                enum_crtc_info = xrandr_get_crtc_info( screen_resources, enum_output_info->crtc );
+                 pXRRFreeOutputInfo( enum_output_info );
+                 if (!enum_crtc_info)
+                     continue;
+@@ -1197,7 +1227,7 @@
+ 
+     if (output_info->crtc)
+     {
+-        crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, output_info->crtc );
++        crtc_info = xrandr_get_crtc_info( screen_resources, output_info->crtc );
+         if (!crtc_info)
+             goto done;
+     }
+@@ -1240,7 +1270,7 @@
+ 
+             if (enum_output_info->crtc)
+             {
+-                enum_crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, enum_output_info->crtc );
++                enum_crtc_info = xrandr_get_crtc_info( screen_resources, enum_output_info->crtc );
+                 if (!enum_crtc_info)
+                     goto done;
+ 
+@@ -1483,7 +1513,7 @@
+     if (!crtc)
+         crtc = get_output_free_crtc( screen_resources, output_info );
+     if (crtc)
+-        crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, crtc );
++        crtc_info = xrandr_get_crtc_info( screen_resources, crtc );
+ 
+     /* If the output is connected to a CRTC, use rotations reported by the CRTC */
+     if (crtc_info)
+@@ -1590,7 +1620,7 @@
+ 
+     if (output_info->crtc)
+     {
+-        crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, output_info->crtc );
++        crtc_info = xrandr_get_crtc_info( screen_resources, output_info->crtc );
+         if (!crtc_info)
+             goto done;
+     }
+@@ -1718,7 +1748,7 @@
+             goto done;
+     }
+ 
+-    crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, crtc );
++    crtc_info = xrandr_get_crtc_info( screen_resources, crtc );
+     if (!crtc_info)
+         goto done;
+ 
+@@ -1770,7 +1800,7 @@
+ {
+     struct x11drv_display_device_handler display_handler;
+     struct x11drv_settings_handler settings_handler;
+-    int event_base, error_base, minor, ret;
++    int event_base, minor, ret;
+     static int major;
+     Bool ok;
+ 
+@@ -1779,7 +1809,7 @@
+     if (!(ret = load_xrandr())) return;  /* can't load the Xrandr library */
+ 
+     /* see if Xrandr is available */
+-    if (!pXRRQueryExtension( gdi_display, &event_base, &error_base )) return;
++    if (!XQueryExtension( gdi_display, RANDR_NAME, &xrandr_opcode, &event_base, &xrandr_error_base )) return;
+     X11DRV_expect_error( gdi_display, XRandRErrorHandler, NULL );
+     ok = pXRRQueryVersion( gdi_display, &major, &minor );
+     if (X11DRV_check_error() || !ok) return;
